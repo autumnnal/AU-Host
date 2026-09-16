@@ -1,4 +1,3 @@
-import sqlite3
 from typing import Optional
 import discord
 from ..config import ROLE_OPTIONS
@@ -226,7 +225,7 @@ class LobbyModal(
         guild_id: int,
         channel_id: int,
         selected_role_id: int,
-        saved_layout: Optional[sqlite3.Row] = None,
+        saved_layout: Optional[dict] = None,
     ):
         super().__init__()
 
@@ -510,110 +509,117 @@ class AnnouncementPreviewView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ):
-        # Acknowledge the interaction immediately. Discord only gives
-        # interaction callbacks a few seconds to respond. Database work
-        # and sending the announcement can take longer than that.
-        await interaction.response.defer()
+        # Acknowledge the interaction immediately. Discord only allows
+        # a few seconds for an interaction response.
+        await interaction.response.defer(ephemeral=True)
 
-        if interaction.guild is None:
-            await interaction.edit_original_response(
-                content="This action must be used inside a server.",
-                embed=None,
-                view=None,
+        try:
+            if interaction.guild is None:
+                await interaction.edit_original_response(
+                    content="This action must be used inside a server.",
+                    embed=None,
+                    view=None,
+                )
+                return
+
+            channel = interaction.guild.get_channel(self.channel_id)
+
+            if channel is None:
+                await interaction.edit_original_response(
+                    content=(
+                        "I couldn't find the original channel. "
+                        "The announcement was not sent."
+                    ),
+                    embed=None,
+                    view=None,
+                )
+                return
+
+            if not isinstance(channel, discord.TextChannel):
+                await interaction.edit_original_response(
+                    content="The original channel is not a text channel.",
+                    embed=None,
+                    view=None,
+                )
+                return
+
+            save_layout(
+                user_id=self.author_id,
+                guild_id=self.guild_id,
+                settings=self.settings,
+                rules=self.rules,
+                extra_info=self.extra_info,
+                ping_role_id=self.selected_role_id,
             )
-            return
 
-        channel = interaction.guild.get_channel(
-            self.channel_id
-        )
+            increment_host_stats(self.author_id, self.guild_id)
 
-        if channel is None:
-            await interaction.edit_original_response(
-                content=(
-                    "I couldn't find the original channel. "
-                    "The announcement was not sent."
+            if self.selected_role_id == 0:
+                announcement_content = (
+                    "🧪 **Test lobby announcement — no role ping sent.**"
+                )
+                allowed_mentions = discord.AllowedMentions.none()
+            else:
+                announcement_content = get_role_mention(
+                    self.selected_role_id
+                )
+                allowed_mentions = discord.AllowedMentions(
+                    roles=True,
+                    users=False,
+                    everyone=False,
+                )
+
+            message = await channel.send(
+                content=announcement_content,
+                embed=self.embed,
+                view=LobbyAnnouncementView(
+                    host_id=self.author_id,
+                    guild_id=self.guild_id,
+                    message_id=0,
                 ),
-                embed=None,
-                view=None,
+                allowed_mentions=allowed_mentions,
             )
 
-            return
-
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.edit_original_response(
-                content=(
-                    "The original channel is not a text channel."
-                ),
-                embed=None,
-                view=None,
+            save_active_lobby(
+                guild_id=self.guild_id,
+                channel_id=self.channel_id,
+                message_id=message.id,
+                host_id=self.author_id,
+                lobby_code=self.lobby_code,
+                settings=self.settings,
+                rules=self.rules,
+                extra_info=self.extra_info,
+                selected_role_id=self.selected_role_id,
             )
 
-            return
-
-        save_layout(
-            user_id=self.author_id,
-            guild_id=self.guild_id,
-            settings=self.settings,
-            rules=self.rules,
-            extra_info=self.extra_info,
-            ping_role_id=self.selected_role_id,
-        )
-
-        increment_host_stats(
-            self.author_id,
-            self.guild_id,
-        )
-
-        if self.selected_role_id == 0:
-            announcement_content = "🧪 **Test lobby announcement — no role ping sent.**"
-            allowed_mentions = discord.AllowedMentions.none()
-        else:
-            announcement_content = get_role_mention(
-                self.selected_role_id
-            )
-            allowed_mentions = discord.AllowedMentions(
-                roles=True,
-                users=False,
-                everyone=False,
-            )
-
-        message = await channel.send(
-            content=announcement_content,
-            embed=self.embed,
-            view=LobbyAnnouncementView(
+            view = LobbyAnnouncementView(
                 host_id=self.author_id,
                 guild_id=self.guild_id,
-                message_id=0,
-            ),
-            allowed_mentions=allowed_mentions,
-        )
+                message_id=message.id,
+            )
+            await message.edit(view=view)
 
-        save_active_lobby(
-            guild_id=self.guild_id,
-            channel_id=self.channel_id,
-            message_id=message.id,
-            host_id=self.author_id,
-            lobby_code=self.lobby_code,
-            settings=self.settings,
-            rules=self.rules,
-            extra_info=self.extra_info,
-            selected_role_id=self.selected_role_id,
-        )
+            await interaction.edit_original_response(
+                content="Your lobby announcement has been sent!",
+                embed=None,
+                view=None,
+            )
 
-        # The buttons are attached when the message is first sent.
-        # This avoids Discord displaying the announcement without its view.
-        view = LobbyAnnouncementView(
-            host_id=self.author_id,
-            guild_id=self.guild_id,
-            message_id=message.id,
-        )
-        await message.edit(view=view)
+        except Exception as error:
+            import traceback
+            traceback.print_exc()
 
-        await interaction.edit_original_response(
-            content="Your lobby announcement has been sent!",
-            embed=None,
-            view=None,
-        )
+            try:
+                await interaction.edit_original_response(
+                    content=(
+                        "❌ **Failed to send the lobby announcement.**\n"
+                        f"```{type(error).__name__}: {error}```"
+                    ),
+                    embed=None,
+                    view=None,
+                )
+            except Exception:
+                pass
 
     @discord.ui.button(
         label="Cancel",
@@ -671,7 +677,7 @@ class EditLobbyModal(
 
     def __init__(
         self,
-        lobby: sqlite3.Row,
+        lobby: dict,
         host: discord.Member,
     ):
         super().__init__()
