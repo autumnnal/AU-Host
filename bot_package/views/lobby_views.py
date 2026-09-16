@@ -1,3 +1,4 @@
+import sqlite3
 from typing import Optional
 import discord
 from ..config import ROLE_OPTIONS
@@ -225,7 +226,7 @@ class LobbyModal(
         guild_id: int,
         channel_id: int,
         selected_role_id: int,
-        saved_layout: Optional[dict] = None,
+        saved_layout: Optional[sqlite3.Row] = None,
     ):
         super().__init__()
 
@@ -509,12 +510,25 @@ class AnnouncementPreviewView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ):
+        # Acknowledge the interaction immediately. Discord only gives
+        # interaction callbacks a few seconds to respond. Database work
+        # and sending the announcement can take longer than that.
+        await interaction.response.defer()
+
+        if interaction.guild is None:
+            await interaction.edit_original_response(
+                content="This action must be used inside a server.",
+                embed=None,
+                view=None,
+            )
+            return
+
         channel = interaction.guild.get_channel(
             self.channel_id
         )
 
         if channel is None:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=(
                     "I couldn't find the original channel. "
                     "The announcement was not sent."
@@ -526,7 +540,7 @@ class AnnouncementPreviewView(discord.ui.View):
             return
 
         if not isinstance(channel, discord.TextChannel):
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=(
                     "The original channel is not a text channel."
                 ),
@@ -595,7 +609,7 @@ class AnnouncementPreviewView(discord.ui.View):
         )
         await message.edit(view=view)
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content="Your lobby announcement has been sent!",
             embed=None,
             view=None,
@@ -657,7 +671,7 @@ class EditLobbyModal(
 
     def __init__(
         self,
-        lobby: dict,
+        lobby: sqlite3.Row,
         host: discord.Member,
     ):
         super().__init__()
